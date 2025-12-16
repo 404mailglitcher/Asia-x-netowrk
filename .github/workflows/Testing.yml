@@ -1,9 +1,12 @@
-name: 🛠️ Temporary Ubuntu VPS with Ngrok SSH
+name: 🛠️ Temporary Ubuntu VPS with Ngrok (PASSWORD AUTH)
 
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
+      vps_password:
+        description: 'Set a STRONG Password for the runner user'
+        required: true
+        default: 'P@sswOrd1234' # CHANGE THIS DEFAULT IMMEDIATELY!
       duration:
         description: 'Tunnel duration (max 6h - e.g., 6h, 3h30m, 1h)'
         required: false
@@ -11,93 +14,68 @@ on:
 
 jobs:
   temporary-vps:
-    # Use the latest Ubuntu runner
     runs-on: ubuntu-latest
-    
-    # Set the maximum timeout for the job to 6 hours (the max allowed)
     timeout-minutes: 360
 
     steps:
-      - name: ⚙️ System Setup and Update
+      - name: ⚙️ System Setup, Update, and Install SSH Server
         run: |
-          echo "### Starting System Setup (Fully Updated) ###"
+          echo "--- Starting System Setup and SSH Installation ---"
           sudo apt-get update
           sudo apt-get upgrade -y
+          sudo apt-get install -y openssh-server
           
-      - name: 📦 Install Useful Tools (Python is already pre-installed)
+      - name: 🔐 Configure Password Authentication
+        id: password_setup
         run: |
-          # The GitHub runner comes with Python 3, pip, git, etc., pre-installed.
-          echo "Python 3 version:"
-          python3 --version
+          # The runner user is the default user in the GitHub runner environment
+          USER_NAME="runner"
+          PASSWORD="${{ github.event.inputs.vps_password }}"
           
-          echo "Installing additional tools: htop, neofetch, tmux"
+          echo "Setting password for user: $USER_NAME"
+          # Set the password for the runner user
+          echo "$USER_NAME:$PASSWORD" | sudo chpasswd
+          
+          # Enable password authentication in the SSH config
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          
+          # Disable required key authentication to allow password login
+          sudo sed -i 's/^PubkeyAuthentication yes/PubkeyAuthentication no/' /etc/ssh/sshd_config
+          
+          # Restart SSH service to apply changes
+          sudo service ssh restart
+          
+          echo "SSH Server is now configured for Password Authentication."
+
+      - name: 📦 Install Useful Tools and Check Python
+        run: |
+          python3 --version
           sudo apt-get install -y htop neofetch tmux
           neofetch
       
-      - name: 🔑 Generate SSH Keys and Setup Authentication
-        id: ssh_key_setup
-        run: |
-          # 1. Generate a temporary, dedicated key pair for this session
-          ssh-keygen -t rsa -b 4096 -f runner_ssh_key -N "" -C "github-ngrok-vps-key"
-          
-          # 2. Add the public key to authorized_keys for the 'runner' user
-          mkdir -p ~/.ssh
-          cat runner_ssh_key.pub >> ~/.ssh/authorized_keys
-          
-          # 3. Output the Private Key (for immediate connection)
-          # Note: This is necessary to display in the logs for connection,
-          # but should be treated as highly sensitive and deleted after the session.
-          echo "--- PRIVATE KEY for this Session (Copy this ENTIRE block) ---"
-          cat runner_ssh_key
-          echo "--- END PRIVATE KEY ---"
-          
-          # 4. Save the private key content as an output for the ngrok action
-          # This is needed because the ngrok action requires the key to start the tunnel.
-          PRIVATE_KEY_CONTENT=$(cat runner_ssh_key | sed 's/$/%0A/' | tr -d '\n')
-          echo "private_key=$PRIVATE_KEY_CONTENT" >> $GITHUB_OUTPUT
-          
-      - name: 🔒 Start ngrok SSH Tunnel
+      - name: 🔒 Start ngrok Tunnel (Expose SSH Port 22)
         id: ngrok_tunnel
         uses: tmshkr/ngrok-ssh@latest
         with:
-          # Your ngrok Authtoken from repository secrets
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-          PORT: 22 # Default SSH port
-          TIMEOUT: ${{ github.event.inputs.duration }}
-          USERNAME: 'runner' # The default user on GitHub-hosted runners
-          # Pass the generated private key content
-          PRIVATE_KEY: ${{ steps.ssh_key_setup.outputs.private_key }}
+          SSH_PORT: 22 
+          # We don't need any key inputs, we just need to expose the port.
+          # USE_GITHUB_ACTOR_KEY is false by default, so it won't interfere.
           
       - name: 📝 Display Full Connection Details
         run: |
-          echo "=========================================================="
-          echo "          🚨 NGROK VPS CONNECTION DETAILS 🚨"
-          echo "=========================================================="
-          
-          # Ngrok provides the full URL/port as an output
           NGROK_URL="${{ steps.ngrok_tunnel.outputs.NGROK_HOST }}"
-          
-          if [ -z "$NGROK_URL" ]; then
-             echo "ERROR: Ngrok URL could not be retrieved. Check your NGROK_AUTHTOKEN secret."
-             exit 1
-          fi
-          
-          # Extract hostname and port
           NGROK_HOST=$(echo $NGROK_URL | awk -F'[:/]' '{print $4}')
           NGROK_PORT=$(echo $NGROK_URL | awk -F'[:/]' '{print $5}')
           
+          echo "=========================================================="
+          echo "          🚨 NGROK VPS CONNECTION DETAILS (PASSWORD AUTH) 🚨"
+          echo "=========================================================="
           echo "✅ SSH User: runner"
-          echo "✅ SSH Password: (None - uses Key Authentication)"
+          echo "✅ SSH Password: ${{ github.event.inputs.vps_password }}"
           echo "✅ Ngrok IP/Port: $NGROK_HOST:$NGROK_PORT"
           echo ""
           echo "➡️  FULL SSH CONNECTION COMMAND (Use Locally):"
-          echo ""
-          echo "   1. Save the private key (output above) to a local file, e.g., ngrok_key.pem"
-          echo "   2. Set permissions: chmod 600 ngrok_key.pem"
-          echo "   3. Run the command:"
-          echo "      ssh -i ngrok_key.pem -p $NGROK_PORT runner@$NGROK_HOST"
-          echo ""
-          echo "=========================================================="
-          echo "### The workflow is now running and will be active for ${{ github.event.inputs.duration }} (Max 6 hours). ###"
-          echo "### DO NOT STOP THIS JOB if you want the tunnel to remain open! ###"
+          echo "      ssh -p $NGROK_PORT runner@$NGROK_HOST"
           echo "=========================================================="
