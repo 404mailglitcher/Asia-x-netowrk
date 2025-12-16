@@ -35,17 +35,22 @@ jobs:
           sudo apt-get upgrade -y
           sudo apt-get dist-upgrade -y
 
-      - name: Install Python & Development Tools (Includes Docker, Git, SSH Server, etc.)
+      - name: Install Python & Essential Tools (Excluding conflicting Docker packages)
         run: |
-          # Install core tools and Python environment
+          # Install core tools, Python environment, and SSH server
           sudo apt-get install -y \
             python3 python3-pip python3-venv python3-dev \
             git curl wget nano vim htop net-tools build-essential \
             openssh-server openssh-client unzip zip jq tmux screen \
-            docker.io docker-compose \
             nodejs npm
 
-      - name: Upgrade pip & Install Common Python Packages (For immediate development)
+      - name: Verify Pre-installed Docker is Available (GitHub Runner feature)
+        run: |
+          docker --version
+          docker compose version
+          sudo usermod -aG docker ${{ github.event.inputs.username }} || true
+
+      - name: Upgrade pip & Install Common Python Packages
         run: |
           # Upgrade pip and install common libraries
           python3 -m pip install --upgrade pip setuptools wheel
@@ -57,25 +62,21 @@ jobs:
       # --- User and Authentication Setup ---
 
       - name: Create SSH User with Password and Add to Sudoers
-        # Use || true to ignore "user already exists" on re-run attempts
         run: |
           sudo useradd -m -s /bin/bash ${{ github.event.inputs.username }} || true
-          # Securely set the password
           echo "${{ github.event.inputs.username }}:${{ github.event.inputs.password }}" | sudo chpasswd
-          # Grant sudo privileges
           sudo usermod -aG sudo ${{ github.event.inputs.username }}
           
-          # Setup SSH directory structure (optional but good practice)
+          # Setup SSH directory structure
           sudo mkdir -p /home/${{ github.event.inputs.username }}/.ssh
           sudo chmod 700 /home/${{ github.event.inputs.username }}/.ssh
           sudo chown -R ${{ github.event.inputs.username }}:${{ github.event.inputs.username }} /home/${{ github.event.inputs.username }}
 
       - name: Configure SSH for Password Authentication
         run: |
-          # Enable password authentication in SSH daemon config
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true # Catch if no/commented
-          # Disable root login
+          # Enable password authentication and disable root login
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
           sudo sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config || true
           sudo sed -i 's/#PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config || true
           
@@ -88,31 +89,24 @@ jobs:
       - name: Download & Setup NGROK
         run: |
           cd /tmp
-          # Download NGROK stable v3 for Linux AMD64
           wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip
           unzip -q ngrok-v3-stable-linux-amd64.zip
           sudo mv ngrok /usr/local/bin/
           sudo chmod +x /usr/local/bin/ngrok
-          # Authenticate NGROK using the secret token
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
       - name: Start SSH & NGROK Tunnel and Extract Details
         id: ngrok_start
         run: |
-          # Start SSH service (already done, but as a safeguard)
           sudo systemctl start ssh
-          # Start NGROK tunnel in the background, forwarding port 22 (SSH)
           ngrok tcp 22 --log=stdout > /tmp/ngrok.log &
-          sleep 10 # Give NGROK time to establish the tunnel
+          sleep 10
           
-          # Extract public URL via NGROK's local API
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           
-          # Extract Host and Port from the URL (e.g., tcp://2.tcp.ngrok.io:12345)
           SSH_HOST=$(echo $NGROK_URL | cut -d'/' -f3 | cut -d':' -f1)
           SSH_PORT=$(echo $NGROK_URL | cut -d':' -f3)
           
-          # Set environment variables for the next step's output
           echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
           echo "SSH_HOST=$SSH_HOST" >> $GITHUB_ENV
           echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
