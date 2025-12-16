@@ -1,12 +1,12 @@
-name: 🛠️ Temporary Ubuntu VPS with Ngrok (PASSWORD AUTH - FINAL FIX)
+name: 🛠️ Temporary Ubuntu VPS with Ngrok (FINAL STABLE FIX)
 
 on:
   workflow_dispatch:
     inputs:
       vps_password:
-        description: 'Set a STRONG Password for the runner user (runner)'
+        description: 'Set a STRONG Password for the runner user'
         required: true
-        default: 'P@sswOrd1234' # MUST BE CHANGED!
+        default: 'P@sswOrd1234' # !!! CHANGE THIS DEFAULT IMMEDIATELY !!!
       duration:
         description: 'Tunnel duration (max 6h - e.g., 6h, 3h30m, 1h)'
         required: false
@@ -15,18 +15,20 @@ on:
 jobs:
   temporary-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 hours maximum
+    timeout-minutes: 360 # Maximum 6 hours for the job
 
     steps:
       - name: ⚙️ System Update and SSH Server Installation
         run: |
           echo "--- Starting System Setup and OpenSSH Installation ---"
+          # Update packages and install the OpenSSH server
           sudo apt-get update
           sudo apt-get upgrade -y
           sudo apt-get install -y openssh-server
           
       - name: 📦 Install Useful Tools and Check Python
         run: |
+          echo "Python 3 version:"
           python3 --version
           sudo apt-get install -y htop neofetch tmux
           neofetch
@@ -36,43 +38,44 @@ jobs:
           USER_NAME="runner"
           PASSWORD="${{ github.event.inputs.vps_password }}"
           
+          echo "Setting password for user: $USER_NAME"
           # 1. Set the password for the default 'runner' user
           echo "$USER_NAME:$PASSWORD" | sudo chpasswd
           
-          # 2. Enable Password Authentication in SSH config
+          # 2. Enable Password Authentication and disable key auth in SSH config
           sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          
-          # 3. Disable Public Key Authentication to prioritize password login
           sudo sed -i 's/^PubkeyAuthentication yes/PubkeyAuthentication no/' /etc/ssh/sshd_config
           
-          # 4. Ensure SSH is using port 22
+          # 3. Ensure SSH is running on port 22
           sudo sed -i 's/^#Port 22/Port 22/' /etc/ssh/sshd_config
           
-          # 5. Restart the SSH service to apply changes
+          # 4. Restart the SSH service to apply changes
           sudo service ssh restart
           
           echo "SSH Server configured for Password Authentication on port 22."
 
-      - name: 🔒 Start ngrok TCP Tunnel
+      - name: 🌐 Start Ngrok SSH Tunnel (Stable Action)
         id: ngrok_tunnel
-        # Using a reliable ngrok tunnel action for generic TCP exposure
-        uses: lreimer/action-ngrok-connect@main
+        # Using a reliable and stable action for Ngrok tunneling
+        uses: Max-Sum/open-ssh-tunnel@v3
         with:
-          # Your ngrok Authtoken from repository secrets
-          ngrok_auth_token: ${{ secrets.NGROK_AUTHTOKEN }}
-          # The local port to tunnel (OpenSSH default)
-          local_port: 22
-          # Use the job timeout to control the tunnel duration
-          max_timeout: ${{ github.event.inputs.duration }}
-          # Ensure ngrok uses TCP protocol
-          protocol: tcp
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          SSH_TUNNEL_TYPE: ngrok # Specifies the tunneling service
+          SSH_TUNNEL_PORT: 22    # Local port to tunnel (SSH)
+          SSH_USER: runner       # Optional, but good to specify
+          SSH_DURATION: ${{ github.event.inputs.duration }} # Set the duration
+          # The action will output the connection details to its log
 
       - name: 📝 Display Full Connection Details
         run: |
-          NGROK_HOST="${{ steps.ngrok_tunnel.outputs.ngrok_host }}"
-          NGROK_PORT="${{ steps.ngrok_tunnel.outputs.ngrok_port }}"
+          # The action outputs the connection details to the environment variable
+          NGROK_HOST_URL="${{ env.TUNNEL_URL }}"
           PASSWORD="${{ github.event.inputs.vps_password }}"
+
+          # Extract hostname and port from the URL (e.g., tcp://0.tcp.ngrok.io:12345)
+          NGROK_HOST=$(echo $NGROK_HOST_URL | awk -F'[:/]' '{print $4}')
+          NGROK_PORT=$(echo $NGROK_HOST_URL | awk -F'[:/]' '{print $5}')
 
           echo "=========================================================="
           echo "          🚨 NGROK VPS CONNECTION DETAILS 🚨"
@@ -84,3 +87,4 @@ jobs:
           echo "➡️  FULL SSH CONNECTION COMMAND (Use Locally):"
           echo "      ssh -p $NGROK_PORT runner@$NGROK_HOST"
           echo "=========================================================="
+          echo "### The VPS will remain active for ${{ github.event.inputs.duration }} (Max 6 hours). ###"
